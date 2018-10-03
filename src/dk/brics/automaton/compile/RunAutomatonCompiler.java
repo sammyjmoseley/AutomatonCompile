@@ -8,6 +8,7 @@ import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.util.CheckClassAdapter;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.*;
 
 import static dk.brics.automaton.compile.ASMUtils.getFullyQualifiedName;
@@ -15,8 +16,12 @@ import static org.objectweb.asm.Opcodes.*;
 
 public class RunAutomatonCompiler {
     private static int classNum = 0;
+    private static final DynamicClassLoader classLoader = new DynamicClassLoader();
 
-    public static CompiledRunAutomaton compile(RunAutomaton runAutomaton) {
+    private static String charAtDesc = new ASMMethodSignatureBuilder().addParam(int.class).addRet(char.class).toString();
+    private static String lengthDesc = new ASMMethodSignatureBuilder().addRet(int.class).toString();
+
+    public static CompiledRunAutomaton compile(RunAutomaton runAutomaton) throws NoSuchMethodException, IllegalAccessException, InvocationTargetException, InstantiationException {
 
         ClassWriter classVisitor = new ClassWriter(0) {
         };
@@ -61,16 +66,15 @@ public class RunAutomatonCompiler {
         rm.visitInsn(ICONST_M1);
         rm.visitJumpInsn(GOTO, stateToLabel.get(runAutomaton.getInitialState()));
 
-        Integer[] states = new Integer[][numStates];
+        Integer[] states = new Integer[numStates];
 
         for (int i = 0; i < numStates; i++) {
             states[i] = i;
         }
 
-        String charAtDesc = new ASMMethodSignatureBuilder().addParam(int.class).addRet(char.class).toString();
-
         for (int i = 0; i < numStates; i++) {
             rm.visitLabel(stateToLabel.get(i));
+            rm.visitFrame(F_FULL, 2, new String[]{className, getFullyQualifiedName(String.class)}, 1, new Object[]{INTEGER});
 
             @SuppressWarnings("unchecked") final List<Character>[] inverseTransitions = (List<Character>[]) new List[numStates];
 
@@ -79,29 +83,57 @@ public class RunAutomatonCompiler {
             }
 
             for (int j = Character.MIN_VALUE; j <= Character.MAX_VALUE; j++) {
-                inverseTransitions[runAutomaton.step(i, j)].add(j);
+                inverseTransitions[runAutomaton.step(i, (char)j)].add((char)j);
             }
 
             Comparator<Integer> comp = Comparator.comparingInt(a -> inverseTransitions[a].size());
 
             Arrays.sort(states, comp);
 
+            Label passLength = new Label();
+
             rm.visitInsn(IINC);
-            // Need to check if over lenght of stirng, if is check if current state final, if is return true, else return false
+
+            // Need to check if over length of stirng, if is check if current state final, if is return true, else return false
+            rm.visitInsn(DUP);
+            rm.visitVarInsn(ALOAD, 1);
+            rm.visitMethodInsn(INVOKESPECIAL, getFullyQualifiedName(String.class), "length", lengthDesc, false);
+            rm.visitJumpInsn(IF_ICMPLT, passLength);
+            if (runAutomaton.isAccept(i)) {
+                rm.visitInsn(ICONST_1);
+            } else {
+                rm.visitInsn(ICONST_0);
+            }
+            rm.visitInsn(IRETURN);
+            rm.visitLabel(passLength);
+            rm.visitFrame(F_FULL, 2, new String[]{className, getFullyQualifiedName(String.class)}, 1, new Object[]{INTEGER});
+
             rm.visitInsn(DUP);
             rm.visitVarInsn(ALOAD, 1);
             rm.visitInsn(SWAP);
             rm.visitMethodInsn(INVOKESPECIAL, getFullyQualifiedName(String.class), "charAt", charAtDesc, false);
 
-            for (Integer state : states) {
-                for (Character c : inverseTransitions[state]) {
-                    rm.visitInsn(DUP);
-                    rm.visitLdcInsn(c);
-                    rm.visitJumpInsn(IF_ICMPEQ, stateToLabel.get(state));
+            for (int j = 0; j < states.length; j++) {
+                int state = states[j];
+                if (j <= states.length - 1) {
+                    for (Character c : inverseTransitions[state]) {
+                        rm.visitInsn(DUP);
+                        rm.visitLdcInsn(c);
+                        rm.visitJumpInsn(IF_ICMPEQ, stateToLabel.get(state));
+                    }
+                } else {
+                    rm.visitJumpInsn(GOTO, stateToLabel.get(state));
                 }
             }
 
         }
+
+        rm.visitMaxs(3, 2);
+        rm.visitEnd();
+
+        @SuppressWarnings("unchecked")
+        Class<CompiledRunAutomaton> clazz = classLoader.defineClass(className, classVisitor.toByteArray());
+        return clazz.getConstructor(new Class[0]).newInstance();
 
     }
 }
