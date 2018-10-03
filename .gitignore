@@ -3,6 +3,5 @@
 /target
 /dist
 /doc
-/.idea/workspace.xml
-/.idea/kotlinc.xml
 *.iml
+.idea/
